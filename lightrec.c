@@ -878,7 +878,7 @@ static void * lightrec_emit_code(struct lightrec_state *state,
 {
 	bool has_code_buffer = ENABLE_CODE_BUFFER && state->tlsf;
 	jit_word_t code_size, new_code_size;
-	void *code;
+	void *code, *buffer;
 
 	jit_realize();
 
@@ -925,26 +925,26 @@ static void * lightrec_emit_code(struct lightrec_state *state,
 	code = jit_emit();
 	if (!code) {
 		if (has_code_buffer)
-			lightrec_free_code(state, code);
+			lightrec_free_code(state, jit_get_code(NULL));
 
 		return NULL;
 	}
 
-	jit_get_code(&new_code_size);
+	buffer = jit_get_code(&new_code_size);
 	lightrec_register(MEM_FOR_CODE, new_code_size);
 
 	if (has_code_buffer) {
-		lightrec_realloc_code(state, code, (size_t) new_code_size);
+		lightrec_realloc_code(state, buffer, (size_t) new_code_size);
 
 		pr_debug("Creating code block at address 0x%" PRIxPTR ", "
 			 "code size: %" PRIuPTR " new: %" PRIuPTR "\n",
-			 (uintptr_t) code, code_size, new_code_size);
+			 (uintptr_t) buffer, code_size, new_code_size);
 	}
 
 	*size = (unsigned int) new_code_size;
 
 	if (state->ops.code_inv)
-		state->ops.code_inv(code, new_code_size);
+		state->ops.code_inv(buffer, new_code_size);
 
 	return code;
 }
@@ -1530,7 +1530,7 @@ int lightrec_compile_block(struct lightrec_cstate *cstate,
 	jit_state_t *_jit, *oldjit;
 	jit_node_t *start_of_block;
 	bool skip_next = false;
-	void *old_fn, *new_fn;
+	void *old_code, *new_fn;
 	size_t old_code_size;
 	unsigned int i, j;
 	u8 old_flags;
@@ -1548,7 +1548,7 @@ int lightrec_compile_block(struct lightrec_cstate *cstate,
 		lightrec_detect_idle(block);
 
 	oldjit = block->_jit;
-	old_fn = block->function;
+	old_code = oldjit ? _jit_get_code(oldjit, NULL) : NULL;
 	old_code_size = block->code_size;
 	block->_jit = _jit;
 
@@ -1752,10 +1752,10 @@ int lightrec_compile_block(struct lightrec_cstate *cstate,
 			lightrec_reaper_add(state->reaper,
 					    lightrec_reap_jit, oldjit);
 			lightrec_reaper_add(state->reaper,
-					    lightrec_reap_function, old_fn);
+					    lightrec_reap_function, old_code);
 		} else {
 			_jit_destroy_state(oldjit);
-			lightrec_free_function(state, old_fn);
+			lightrec_free_function(state, old_code);
 		}
 
 		lightrec_unregister(MEM_FOR_CODE, old_code_size);
@@ -1848,12 +1848,12 @@ void lightrec_free_block(struct lightrec_state *state, struct block *block)
 
 	if (!(old_flags & BLOCK_NO_OPCODE_LIST))
 		lightrec_free_opcode_list(state, block->opcode_list);
-	if (block->_jit)
-		_jit_destroy_state(block->_jit);
 	if (block->function) {
-		lightrec_free_function(state, block->function);
+		lightrec_free_function(state, _jit_get_code(block->_jit, NULL));
 		lightrec_unregister(MEM_FOR_CODE, block->code_size);
 	}
+	if (block->_jit)
+		_jit_destroy_state(block->_jit);
 	lightrec_free(state, MEM_FOR_IR, sizeof(*block), block);
 }
 
