@@ -117,6 +117,7 @@ struct block {
 	jit_state_t *_jit;
 	struct opcode *opcode_list;
 	void (*function)(void);
+	void *code_buffer;
 	const u32 *code;
 	struct block *next;
 	u32 pc;

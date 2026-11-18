@@ -873,12 +873,12 @@ static void lightrec_free_code(struct lightrec_state *state, void *ptr)
 static char lightning_code_data[0x80000];
 
 static void * lightrec_emit_code(struct lightrec_state *state,
-				 const struct block *block,
+				 struct block *block,
 				 jit_state_t *_jit, unsigned int *size)
 {
 	bool has_code_buffer = ENABLE_CODE_BUFFER && state->tlsf;
 	jit_word_t code_size, new_code_size;
-	void *code;
+	void *code, *buffer = NULL;
 
 	jit_realize();
 
@@ -896,9 +896,9 @@ static void * lightrec_emit_code(struct lightrec_state *state,
 		code_size *= 2;
 #endif
 
-		code = lightrec_alloc_code(state, (size_t) code_size);
+		buffer = lightrec_alloc_code(state, (size_t) code_size);
 
-		if (!code) {
+		if (!buffer) {
 			if (ENABLE_THREADED_COMPILER) {
 				/* If we're using the threaded compiler, return
 				 * an allocation error here. The threaded
@@ -912,39 +912,40 @@ static void * lightrec_emit_code(struct lightrec_state *state,
 
 			pr_debug("Re-try to alloc %zu bytes...\n", code_size);
 
-			code = lightrec_alloc_code(state, code_size);
-			if (!code) {
+			buffer = lightrec_alloc_code(state, code_size);
+			if (!buffer) {
 				pr_err("Could not alloc even after removing old blocks!\n");
 				return NULL;
 			}
 		}
 
-		jit_set_code(code, code_size);
+		jit_set_code(buffer, code_size);
 	}
 
 	code = jit_emit();
 	if (!code) {
 		if (has_code_buffer)
-			lightrec_free_code(state, code);
+			lightrec_free_code(state, buffer);
 
 		return NULL;
 	}
 
-	jit_get_code(&new_code_size);
+	buffer = jit_get_code(&new_code_size);
 	lightrec_register(MEM_FOR_CODE, new_code_size);
 
 	if (has_code_buffer) {
-		lightrec_realloc_code(state, code, (size_t) new_code_size);
+		lightrec_realloc_code(state, buffer, (size_t) new_code_size);
 
 		pr_debug("Creating code block at address 0x%" PRIxPTR ", "
 			 "code size: %" PRIuPTR " new: %" PRIuPTR "\n",
-			 (uintptr_t) code, code_size, new_code_size);
+			 (uintptr_t) buffer, code_size, new_code_size);
 	}
 
+	block->code_buffer = buffer;
 	*size = (unsigned int) new_code_size;
 
 	if (state->ops.code_inv)
-		state->ops.code_inv(code, new_code_size);
+		state->ops.code_inv(buffer, new_code_size);
 
 	return code;
 }
@@ -1405,6 +1406,7 @@ static struct block * lightrec_precompile_block(struct lightrec_state *state,
 	block->pc = pc;
 	block->_jit = NULL;
 	block->function = NULL;
+	block->code_buffer = NULL;
 	block->opcode_list = list;
 	block->code = code;
 	block->next = NULL;
@@ -1534,7 +1536,7 @@ int lightrec_compile_block(struct lightrec_cstate *cstate,
 	jit_state_t *_jit, *oldjit;
 	jit_node_t *start_of_block;
 	bool skip_next = false;
-	void *old_fn, *new_fn;
+	void *old_code, *new_fn;
 	size_t old_code_size;
 	unsigned int i, j;
 	u8 old_flags;
@@ -1552,7 +1554,7 @@ int lightrec_compile_block(struct lightrec_cstate *cstate,
 		lightrec_detect_idle(block);
 
 	oldjit = block->_jit;
-	old_fn = block->function;
+	old_code = block->code_buffer;
 	old_code_size = block->code_size;
 	block->_jit = _jit;
 
@@ -1756,10 +1758,10 @@ int lightrec_compile_block(struct lightrec_cstate *cstate,
 			lightrec_reaper_add(state->reaper,
 					    lightrec_reap_jit, oldjit);
 			lightrec_reaper_add(state->reaper,
-					    lightrec_reap_function, old_fn);
+					    lightrec_reap_function, old_code);
 		} else {
 			_jit_destroy_state(oldjit);
-			lightrec_free_function(state, old_fn);
+			lightrec_free_function(state, old_code);
 		}
 
 		lightrec_unregister(MEM_FOR_CODE, old_code_size);
@@ -1855,7 +1857,7 @@ void lightrec_free_block(struct lightrec_state *state, struct block *block)
 	if (block->_jit)
 		_jit_destroy_state(block->_jit);
 	if (block->function) {
-		lightrec_free_function(state, block->function);
+		lightrec_free_function(state, block->code_buffer);
 		lightrec_unregister(MEM_FOR_CODE, block->code_size);
 	}
 	lightrec_free(state, MEM_FOR_IR, sizeof(*block), block);
