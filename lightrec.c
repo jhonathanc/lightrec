@@ -30,7 +30,12 @@
 #include <stdlib.h>
 #include <string.h>
 
-static size_t dcache_size = 32768;
+#ifndef LIGHTREC_ALIGNED_ALLOC
+#define LIGHTREC_ALIGNED_ALLOC aligned_alloc
+#endif
+#ifndef LIGHTREC_ALIGNED_FREE
+#define LIGHTREC_ALIGNED_FREE free
+#endif
 
 static struct block * lightrec_precompile_block(struct lightrec_state *state,
 						u32 pc);
@@ -1886,25 +1891,29 @@ static void lightrec_free_state(struct lightrec_state *state)
 	void *ptr;
 
 	ptr = (void *)((uintptr_t)state - 0x400);
-	free(ptr);
+	LIGHTREC_ALIGNED_FREE(ptr);
 }
 
 static struct lightrec_state *lightrec_alloc_state(bool lut_32bit)
 {
 	struct lightrec_state *state;
-	size_t struct_size, lut_size, alloc_size;
+	size_t struct_size, lut_size, alloc_size, alignment = 32768;
 	void *ptr;
 
 #ifdef _SC_LEVEL1_DCACHE_SIZE
-	dcache_size = sysconf(_SC_LEVEL1_DCACHE_SIZE);
+	long cache_size = sysconf(_SC_LEVEL1_DCACHE_SIZE);
+
+	if (cache_size > 0 && !(cache_size & (cache_size - 1)))
+		alignment = (size_t)cache_size;
 #endif
 
-
+	if (alignment < sizeof(void *))
+		alignment = sizeof(void *);
 	struct_size = sizeof(*state) + 0x400;
 	lut_size = (lut_32bit ? 4 : sizeof(void *)) * CODE_LUT_SIZE;
-	alloc_size = (struct_size + lut_size + dcache_size - 1) & ~(dcache_size - 1);
+	alloc_size = (struct_size + lut_size + alignment - 1) & ~(alignment - 1);
 
-	ptr = aligned_alloc(dcache_size, alloc_size);
+	ptr = LIGHTREC_ALIGNED_ALLOC(alignment, alloc_size);
 	if (!ptr)
 		return NULL;
 
